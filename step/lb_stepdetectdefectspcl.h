@@ -90,10 +90,14 @@ protected:
      */
     pcl::ModelCoefficients::Ptr estimateCylinder(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, pcl::PointIndices &inliersCylinder);
 
+    pcl::ModelCoefficients::Ptr
+    estimateCylinderOfSlice(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud,
+                            pcl::PointCloud<pcl::Normal>::Ptr cloudNormals,
+                            pcl::PointIndices pointIndices);
     /*! \brief Segment the log by angle
      *
      */
-    void segmentByAngle(pcl::PointCloud<pcl::PointXYZ> cloud,
+    void segmentByAngle(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud,
                         std::vector<pcl::PointIndices> sliceIndices,
                         double angleStep,
                         std::vector<pcl::PointIndices::Ptr> &cloudPartIndices);
@@ -119,6 +123,8 @@ protected:
      *  The input point cloud is also transformed
      */
     void transformCloud(pcl::PointCloud<pcl::PointXYZ> &cloud, Eigen::Matrix4d transMat, CT_Scene *outScene);
+
+    void transformCloud(pcl::PointCloud<pcl::PointXYZ> &cloud, pcl::PointIndices indices, Eigen::Matrix4d transMat);
 
     void transformCloudByEnertia(pcl::PointCloud<pcl::PointXYZ> &cloud, CT_Scene *outScene);
     /*! \brief Transform a point cloud by a transformation matrix
@@ -158,6 +164,7 @@ private:
 
     double                  distanceThreshold;
     double                  angleThreshold;
+    double                  sliceLength;
     CT_AutoRenameModels     outCylinderModelName;
     CT_AutoRenameModels     outClusterModelName;
     CT_AutoRenameModels     outGroupClusterModelName;

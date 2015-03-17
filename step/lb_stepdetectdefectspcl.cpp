@@ -1,6 +1,7 @@
 #include "lb_stepdetectdefectspcl.h"
 
 #include <math.h>
+#include <cmath>
 #include<float.h>
 
 #include <QFile>
@@ -57,6 +58,7 @@
 #define DEF_OUT_CIRCLE              "OutCircle"
 #define DEF_OUT_SCENE               "OutScene"
 #define DEF_OUT_CYLINDER            "OutCylinder"
+#define DEF_OUT_CYLINDER_PCL        "OutCylinderPCL"
 #define DEF_OUT_MESH                "OutMesh"
 
 
@@ -109,33 +111,36 @@ void LB_StepDetectDefectsPcl::createInResultModelListProtected()
 // Creation and affiliation of OUT models
 void LB_StepDetectDefectsPcl::createOutResultModelListProtected()
 {
-    /*
+
     CT_OutResultModelGroupToCopyPossibilities *res = createNewOutResultModelToCopy(DEF_IN_RESULT);
     res->setRootGroup(DEF_OUT_GROUP, new CT_StandardItemGroup(), tr("Groupe"));
     res->addGroupModel(DEF_OUT_GROUP,outGroupClusterModelName, new CT_StandardItemGroup(), tr("Groupe de clusters"));
     res->addItemModel(DEF_OUT_GROUP, outSceneModelName, new CT_Scene(), tr("Scène(s) transformée(s)"));
     res->addItemModel(DEF_OUT_GROUP, outCylinderModelName, new CT_Cylinder(), tr("Cylindre"));
     res->addItemModel(DEF_OUT_GROUP_CLUSTER, outClusterModelName, new CT_PointCluster, tr("Cluster(s)"));
-    */
 
+/*
     CT_OutResultModelGroup* res = createNewOutResultModel(DEF_OUT_RESULT, tr("Scène(s) transformée(s)"));
     res->setRootGroup(DEF_OUT_GROUP, new CT_StandardItemGroup(), tr("Groupe"));
     res->addItemModel(DEF_OUT_GROUP, DEF_OUT_SCENE, new CT_Scene(), tr("Scène(s) transformée(s)"));
     res->addItemModel(DEF_OUT_GROUP, DEF_OUT_CYLINDER, new CT_Cylinder(), tr("Cylindre"));
+    res->addItemModel(DEF_OUT_GROUP, DEF_OUT_CYLINDER_PCL, new CT_Cylinder(), tr("Cylindre estimated by PCL"));
     res->addItemModel(DEF_OUT_GROUP, DEF_OUT_MESH, new CT_MeshModel(), tr("Plane"));
     res->addGroupModel(DEF_OUT_GROUP, DEF_OUT_GROUP_CLUSTER, new CT_StandardItemGroup(), tr("Clusters de défaults"));
     for(int i = 0; i < 100; i++){
         QString modelName = DEF_OUT_CLUSTER + QString::number(i);
         res->addItemModel(DEF_OUT_GROUP_CLUSTER, modelName, new CT_PointCluster, tr("Cluster"));
     }
+    */
 }
 
 // Semi-automatic creation of step parameters DialogBox
 void LB_StepDetectDefectsPcl::createPostConfigurationDialog()
 {
     CT_StepConfigurableDialog* dialog = newStandardPostConfigurationDialog();
-    dialog->addDouble(tr("Distance threshold"), "cm", 0.0, 20.0, 2, distanceThreshold);
-    dialog->addDouble(tr("Angle threshold"), "cm", 0.0, 1.55, 2, angleThreshold);
+    dialog->addDouble(tr("Slice length"), "m", 0.1, 1.0, 4, sliceLength);
+    dialog->addDouble(tr("Distance threshold"), "m", 0.0, 0.05, 4, distanceThreshold);
+    dialog->addDouble(tr("Angle threshold"), "rad", 0.0, 1.55, 4, angleThreshold);
 }
 
 void LB_StepDetectDefectsPcl::compute()
@@ -150,7 +155,6 @@ void LB_StepDetectDefectsPcl::compute()
 
     CT_ResultGroupIterator it(resultGroup, this, DEF_IN_GROUP);
 
-    pcl::PointCloud<pcl::PointXYZ>::Ptr inputCloud(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
 
     while(it.hasNext() && !isStopped()){
@@ -170,32 +174,27 @@ void LB_StepDetectDefectsPcl::compute()
                 itPoint.next();
                 // récupération du point
                 const CT_Point &p = itPoint.currentPoint();                
-                inputCloud->points.push_back(pcl::PointXYZ(p[0], p[1], p[2]));
+                cloud->points.push_back(pcl::PointXYZ(p[0], p[1], p[2]));
             }
         }
 
-        preprocessPointCloud(inputCloud, cloud);
-        Eigen::Vector4d centroid;
-        pcl::compute3DCentroid(*cloud, centroid);
-
+        //preprocessPointCloud(inputCloud, cloud);
         CT_Scene *outScene = new CT_Scene(DEF_OUT_SCENE, outResult);
 
         //transformCloud(*cloud, transMat, outScene);
         transformCloudByEnertia(*cloud, outScene);
-
         CT_StandardItemGroup *outGroup = new CT_StandardItemGroup(DEF_OUT_GROUP, outResult);
         CT_StandardItemGroup *outGroupCluster = new CT_StandardItemGroup(DEF_OUT_GROUP_CLUSTER, outResult);
         outGroup->addGroup(outGroupCluster);
         outGroup->addItemDrawable(outScene);
         outResult->addGroup(outGroup);
 
-        double sliceLength = 100; //mm
         std::vector<pcl::PointIndices> sliceIndices;
         cutLog(*cloud, sliceLength, sliceIndices);
 
         double angleStep = 2*M_PI/20;
         std::vector<pcl::PointIndices::Ptr> cloudPartIndices;
-        segmentByAngle(*cloud, sliceIndices, angleStep, cloudPartIndices);
+        segmentByAngle(cloud, sliceIndices, angleStep, cloudPartIndices);
 
         pcl::PointIndices::Ptr defaultIndices (new pcl::PointIndices);
         std::vector<pcl::ModelCoefficients::Ptr> planesCoefficients = detectDefaults(cloud, cloudPartIndices, distanceThreshold, *defaultIndices);
@@ -221,17 +220,33 @@ void LB_StepDetectDefectsPcl::compute()
                 outGroupCluster->addItemDrawable(pointCluster);
                 qDebug()<<"Cluster size: "<<pointCluster->getPointCloudIndexSize();
             }
-        }        
+        }
 
         qDebug() << "Number of points" << cloud->points.size();
         //qDebug() << "Number of defect points" << defautls->points.size();
 
-        double rad = 80;
-        double h = 1000;
+        double rad = 0.08;
+        double h = 1.0;
         CT_CylinderData *cylinderData = new CT_CylinderData(Eigen::Vector3d(0,0,0), Eigen::Vector3d::UnitX(), rad, h);
         if(cylinderData != NULL && cylinderData->getRadius() > 0)
         {
             CT_Cylinder *cyl = new CT_Cylinder(DEF_OUT_CYLINDER, outResult, cylinderData);
+            outGroup->addItemDrawable(cyl);
+            PS_LOG->addMessage(LogInterface::debug, LogInterface::plugin, tr("Add a cylinder with radius = "), "");
+            PS_LOG->addMessage(LogInterface::debug, LogInterface::plugin, QString::number(cyl->getRadius()));
+        }
+
+        pcl::ModelCoefficients::Ptr  coefficientsCylinder (new pcl::ModelCoefficients);
+        pcl::PointIndices::Ptr inliersCylinder (new pcl::PointIndices);
+
+        coefficientsCylinder = estimateCylinder(cloud, *inliersCylinder);
+        Eigen::Vector3d onePointInDirection(coefficientsCylinder->values[0], coefficientsCylinder->values[1], coefficientsCylinder->values[2]);
+        Eigen::Vector3d directionPcl(coefficientsCylinder->values[3], coefficientsCylinder->values[4], coefficientsCylinder->values[5]);
+
+        CT_CylinderData *cylinderDataPcl = new CT_CylinderData(onePointInDirection, directionPcl, coefficientsCylinder->values[6], h);
+        if(cylinderData != NULL && cylinderDataPcl->getRadius() > 0)
+        {
+            CT_Cylinder *cyl = new CT_Cylinder(DEF_OUT_CYLINDER_PCL, outResult, cylinderDataPcl);
             outGroup->addItemDrawable(cyl);
             PS_LOG->addMessage(LogInterface::debug, LogInterface::plugin, tr("Add a cylinder with radius = "), "");
             PS_LOG->addMessage(LogInterface::debug, LogInterface::plugin, QString::number(cyl->getRadius()));
@@ -409,11 +424,14 @@ void LB_StepDetectDefectsPcl::compute()
     }
 }
 
-void LB_StepDetectDefectsPcl::segmentByAngle(pcl::PointCloud<pcl::PointXYZ> cloud,
+void LB_StepDetectDefectsPcl::segmentByAngle(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud,
                                              std::vector<pcl::PointIndices> sliceIndices,
                                              double angleStep,
                                              std::vector<pcl::PointIndices::Ptr> &cloudPartIndices)
 {
+#ifdef QT_DEBUG
+    qint64 begin = QDateTime::currentMSecsSinceEpoch();
+#endif
     int nbArc = ceil(2 * M_PI / angleStep);
     for(size_t i = 0; i < nbArc * sliceIndices.size(); i++)
     {
@@ -422,11 +440,51 @@ void LB_StepDetectDefectsPcl::segmentByAngle(pcl::PointCloud<pcl::PointXYZ> clou
         cloudPartIndices.push_back(cloudPart);        
     }
 
+    pcl::PointCloud<pcl::Normal>::Ptr cloudNormals (new pcl::PointCloud<pcl::Normal>);
+    pcl::NormalEstimation<pcl::PointXYZ, pcl::Normal> ne;
+    pcl::search::KdTree<pcl::PointXYZ>::Ptr tree (new pcl::search::KdTree<pcl::PointXYZ> ());
+
+    // Estimate point normals
+    ne.setSearchMethod (tree);
+    ne.setInputCloud (cloud);
+    ne.setKSearch (10);
+    ne.compute (*cloudNormals);
+
     for (size_t sliceId = 0; sliceId < sliceIndices.size(); sliceId++)
     {
+        if(sliceIndices[sliceId].indices.size() < 100)
+        {
+            continue;
+        }
+        /*
+        pcl::ModelCoefficients::Ptr  coefficientsCylinder (new pcl::ModelCoefficients);
+
+        coefficientsCylinder = estimateCylinderOfSlice(cloud, cloudNormals, sliceIndices[sliceId]);
+        if(coefficientsCylinder->values.size() == 0){
+            continue;
+        }
+
+        Eigen::Vector3d onePointInDirection(coefficientsCylinder->values[0], coefficientsCylinder->values[1], coefficientsCylinder->values[2]);
+        Eigen::Vector3d directionPcl(coefficientsCylinder->values[3], coefficientsCylinder->values[4], coefficientsCylinder->values[5]);
+
+        Eigen::Matrix4d transMat = getTransformationMatrix(onePointInDirection, directionPcl);
+
+        transformCloud(*cloud, sliceIndices[sliceId], transMat);
+        */
         for (size_t i = 0; i < sliceIndices[sliceId].indices.size(); i++)
         {
-            pcl::PointXYZ p = cloud[sliceIndices[sliceId].indices.at(i)];
+            pcl::PointXYZ p = cloud->points[sliceIndices[sliceId].indices.at(i)];
+            /*
+            //distance to center vector of cylinder
+            Eigen::Vector3d p0(onePointInDirection.x() - p.x, onePointInDirection.y() - p.y, onePointInDirection.z() - p.z);
+            Eigen::Vector3d v = p0.cross(directionPcl);
+            double d = v.norm()/directionPcl.norm();
+            //don't include points that are close to center
+            if(d < 0.7*coefficientsCylinder->values[6])
+            {
+                continue;
+            }
+            */
             //Calculate angle with Oy
             double angle = acos(p.y/sqrt( pow(p.y,2) + pow(p.z,2)));
             if(p.z < 0)
@@ -434,9 +492,14 @@ void LB_StepDetectDefectsPcl::segmentByAngle(pcl::PointCloud<pcl::PointXYZ> clou
                 angle = 2 * M_PI - angle;
             }
             int segment = sliceId*nbArc + angle / angleStep;
-            cloudPartIndices[segment]->indices.push_back(i);
+            cloudPartIndices[segment]->indices.push_back(sliceIndices[sliceId].indices[i]);
         }
     }
+#ifdef QT_DEBUG
+  qint64 end = QDateTime::currentMSecsSinceEpoch();
+  qDebug()<<"Segmentation in: "<< end - begin;
+#endif
+
 }
 
 std::vector<pcl::ModelCoefficients::Ptr>
@@ -445,6 +508,9 @@ LB_StepDetectDefectsPcl::detectDefaults(pcl::PointCloud<pcl::PointXYZ>::Ptr clou
                                         double threshold,
                                         pcl::PointIndices &defautls)
 {
+#ifdef QT_DEBUG
+    qint64 begin = QDateTime::currentMSecsSinceEpoch();
+#endif
     qint64 currentTime = QDateTime::currentMSecsSinceEpoch();
     QString filename = "Error" + QString::number(currentTime);
     QFile file(filename);
@@ -470,7 +536,7 @@ LB_StepDetectDefectsPcl::detectDefaults(pcl::PointCloud<pcl::PointXYZ>::Ptr clou
         ne.setSearchMethod (tree);
         ne.setInputCloud (cloud);
         ne.setIndices(cloudPartIndices[i]);
-        ne.setKSearch (5);
+        ne.setKSearch (10);
         ne.compute (*cloudNormals);
 
         // Create the segmentation object
@@ -480,7 +546,7 @@ LB_StepDetectDefectsPcl::detectDefaults(pcl::PointCloud<pcl::PointXYZ>::Ptr clou
         // Mandatory
         seg.setModelType (pcl::SACMODEL_PLANE);
         seg.setMethodType (pcl::SAC_RANSAC);
-        seg.setDistanceThreshold (5);
+        seg.setDistanceThreshold (0.003);
         seg.setInputCloud (cloud);
         seg.setIndices(cloudPartIndices[i]);
         seg.segment (*inliers, *coefficients);
@@ -494,12 +560,11 @@ LB_StepDetectDefectsPcl::detectDefaults(pcl::PointCloud<pcl::PointXYZ>::Ptr clou
         for (size_t j = 1; j < cloudPartIndices[i]->indices.size(); j++)
         {
             int index = cloudPartIndices[i]->indices[j];
-            double distance = abs(coefficients->values[0]*cloud->points[index].x +
+            double distance = std::abs(coefficients->values[0]*cloud->points[index].x +
                                   coefficients->values[1]*cloud->points[index].y +
                                   coefficients->values[2]*cloud->points[index].z +
-                                  coefficients->values[3])/
-                                  sqrt(pow(coefficients->values[0],2)+pow(coefficients->values[1],2)+pow(coefficients->values[2],2) );
-            stream << distance<<"\n";
+                                  coefficients->values[3]);
+            stream <<cloud->points[index].x<<"\t"<<cloud->points[index].y<<"\t"<<cloud->points[index].z<<"\t" << distance<<"\t"<<"\n";
             if(distance > threshold )
             {
                 pcl::Normal n = cloudNormals->points[i];
@@ -516,6 +581,11 @@ LB_StepDetectDefectsPcl::detectDefaults(pcl::PointCloud<pcl::PointXYZ>::Ptr clou
         qDebug() << "Cloud part " << i << ", defaults/all: " << nbDefaults << "/"<< nbPoints;
     }
     file.close();
+#ifdef QT_DEBUG
+    qint64 end = QDateTime::currentMSecsSinceEpoch();
+    qDebug()<<"Detection in: "<< end - begin;
+#endif
+
     return planesCoefficients;
 }
 
@@ -523,17 +593,25 @@ void LB_StepDetectDefectsPcl::clusterPointCloud(pcl::PointCloud<pcl::PointXYZ>::
                                                 pcl::PointIndices::Ptr defaultIndices,
                                                 std::vector<pcl::PointIndices> &clusterIndices)
 {
+#ifdef QT_DEBUG
+    qint64 begin = QDateTime::currentMSecsSinceEpoch();
+#endif
     pcl::search::KdTree<pcl::PointXYZ>::Ptr kd (new pcl::search::KdTree<pcl::PointXYZ>);
     kd->setInputCloud (cloud);
 
     pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
-    ec.setClusterTolerance (5);
-    ec.setMinClusterSize (200);
+    ec.setClusterTolerance (0.005);
+    ec.setMinClusterSize (20);
     ec.setMaxClusterSize (cloud->points.size());
     ec.setSearchMethod (kd);
     ec.setInputCloud (cloud);
     ec.setIndices(defaultIndices);
     ec.extract (clusterIndices);
+#ifdef QT_DEBUG
+    qint64 end = QDateTime::currentMSecsSinceEpoch();
+    qDebug()<<"Cluster in: "<< end - begin;
+#endif
+
 }
 
 Eigen::Matrix4d LB_StepDetectDefectsPcl::getTransformationMatrix(Eigen::Vector3d directionVector,
@@ -575,6 +653,9 @@ Eigen::Matrix4d LB_StepDetectDefectsPcl::getTransformationMatrix(Eigen::Vector3d
 
 void LB_StepDetectDefectsPcl::transformCloud(pcl::PointCloud<pcl::PointXYZ> &cloud, Eigen::Matrix4d transMat, CT_Scene *outScene)
 {
+#ifdef QT_DEBUG
+    qint64 begin = QDateTime::currentMSecsSinceEpoch();
+#endif
     // limites de la bounding-box de la scène de sortie
     double minX = std::numeric_limits<double>::max();
     double minY = minX;
@@ -612,11 +693,36 @@ void LB_StepDetectDefectsPcl::transformCloud(pcl::PointCloud<pcl::PointXYZ> &clo
 
     outScene->setPointCloudIndexRegistered(pcir);
     outScene->setBoundingBox(minX, minY, minZ, maxX, maxY, maxZ);
+#ifdef QT_DEBUG
+    qint64 end = QDateTime::currentMSecsSinceEpoch();
+    qDebug()<<"Transform in: "<< end - begin;
+#endif
+}
+
+void LB_StepDetectDefectsPcl::transformCloud(pcl::PointCloud<pcl::PointXYZ> &cloud, pcl::PointIndices indices, Eigen::Matrix4d transMat)
+{
+#ifdef QT_DEBUG
+    qint64 begin = QDateTime::currentMSecsSinceEpoch();
+#endif
+
+
+    for(size_t i; i < indices.indices.size(); i++){
+        Eigen::Vector4d v(cloud[indices.indices[i]].x, cloud[indices.indices[i]].y, cloud[indices.indices[i]].z, 1);
+        Eigen::Vector4d transformed = transMat*v;
+        pcl::PointXYZ pointPcl(transformed[0], transformed[1], transformed[2]);
+        cloud[i] = pointPcl;
+    }
+#ifdef QT_DEBUG
+    qint64 end = QDateTime::currentMSecsSinceEpoch();
+    qDebug()<<"Transform slice in: "<< end - begin;
+#endif
 }
 
 void LB_StepDetectDefectsPcl::transformCloudByEnertia(pcl::PointCloud<pcl::PointXYZ> &cloud, CT_Scene *outScene)
 {
-
+#ifdef QT_DEBUG
+    qint64 begin = QDateTime::currentMSecsSinceEpoch();
+#endif
     //Lecture du nuage
     Eigen ::Vector3d centroid = getCentroid(cloud);
     //pcl::compute3DCentroid(cloud, centroid);
@@ -650,14 +756,7 @@ void LB_StepDetectDefectsPcl::transformCloudByEnertia(pcl::PointCloud<pcl::Point
         sumY += cloud[i].y;
         sumZ += cloud[i].z;
     }
-/*
-    double Ixx = y2 + z2 - (sumY*sumY + sumZ*sumZ)/cloud.size();
-    double Iyy = x2 + z2 - (sumX*sumX + sumZ*sumZ)/cloud.size();
-    double Izz = x2 + y2 - (sumX*sumX + sumY*sumY)/cloud.size();
-    double Ixy = -xy + sumX*sumY/cloud.size();
-    double Ixz = -xz + sumX*sumZ/cloud.size();
-    double Iyz = -yz + sumY*sumZ/cloud.size();
-*/
+
     double Ixx = y2 + z2;
     double Iyy = x2 + z2;
     double Izz = x2 + y2;
@@ -681,13 +780,41 @@ void LB_StepDetectDefectsPcl::transformCloudByEnertia(pcl::PointCloud<pcl::Point
     eigensolver.compute(MI);
     lambda = eigensolver.eigenvalues();
     eigenVectors = eigensolver.eigenvectors();
-    double maxEigenValue = lambda[0];
-    int maxEigenValueIndex = 0;
-    for (size_t i = 1; i < 3; i++)
-    if(lambda[i] > maxEigenValue)
+
+    Eigen::Vector3d V3;
+    Eigen::Vector3d V2;
+    Eigen::Vector3d V1;
+
+    //produit vectoriel de v1 et v2
+    V3(0) = eigenVectors.col(0)(1) * eigenVectors.col(1)(2) - eigenVectors.col(0)(2) * eigenVectors.col(1)(1);
+    V3(1) = eigenVectors.col(1)(0) * eigenVectors.col(0)(2) - eigenVectors.col(1)(2) * eigenVectors.col(0)(0);
+    V3(2) = eigenVectors.col(0)(0) * eigenVectors.col(1)(1) - eigenVectors.col(0)(1) * eigenVectors.col(1)(0);
+
+
+    //produit vectoriel de v2 et v3
+    V1(0) = eigenVectors.col(2)(1) * eigenVectors.col(1)(2) - eigenVectors.col(2)(2) * eigenVectors.col(1)(1);
+    V1(1) = eigenVectors.col(1)(0) * eigenVectors.col(2)(2) - eigenVectors(2,1) * eigenVectors.col(2)(0);
+    V1(2) = eigenVectors.col(2)(0) * eigenVectors.col(1)(1) - eigenVectors.col(2)(1) * eigenVectors.col(1)(0);
+
+    //produit vectoriel de v1 et v3
+    V2(0)= eigenVectors.col(2)(1) * eigenVectors.col(0)(2) - eigenVectors.col(2)(2) * eigenVectors.col(0)(1);
+    V2(1)= eigenVectors.col(0)(0) * eigenVectors.col(2)(2) - eigenVectors.col(0)(2) * eigenVectors.col(2)(0);
+    V2(2)= eigenVectors.col(2)(0) * eigenVectors.col(0)(1) - eigenVectors.col(2)(1) * eigenVectors.col(0)(0);
+
+    //A VERIFIER
+    if( eigenVectors(2,0) < 0)
     {
-        maxEigenValue = lambda[i];
-        maxEigenValueIndex = i;
+        eigenVectors.col(0) = -eigenVectors.col(0);
+
+        if(V3(0)*eigenVectors(0,2) >0 && V3(1)*eigenVectors(1,2) >0 && V3(2) * eigenVectors(2,2) > 0)
+            eigenVectors.col(1) = - eigenVectors.col(1);
+
+        if(V2(0)* eigenVectors(0,1) > 0 && V2(1)* eigenVectors(1,1) > 0 && V2(2)* eigenVectors(2,1) > 0)
+            eigenVectors.col(2) = - eigenVectors.col(2);
+    }else
+    {
+        //X.col(1) = - X.col(1);
+        eigenVectors.col(2) = - eigenVectors.col(2);
     }
 
     // limites de la bounding-box de la scène de sortie
@@ -728,7 +855,43 @@ void LB_StepDetectDefectsPcl::transformCloudByEnertia(pcl::PointCloud<pcl::Point
 
     outScene->setPointCloudIndexRegistered(pcir);
     outScene->setBoundingBox(minX, minY, minZ, maxX, maxY, maxZ);
+#ifdef QT_DEBUG
+    qint64 end = QDateTime::currentMSecsSinceEpoch();
+    qDebug()<<"Transform in: "<< end - begin;
+#endif
 }
+
+pcl::ModelCoefficients::Ptr
+LB_StepDetectDefectsPcl::estimateCylinderOfSlice(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud,
+                                                 pcl::PointCloud<pcl::Normal>::Ptr cloudNormals,
+                                                 pcl::PointIndices pointIndices)
+{
+    pcl::ModelCoefficients::Ptr  coefficientsCylinder (new pcl::ModelCoefficients);
+    //Estimate cylinder
+    pcl::SACSegmentationFromNormals<pcl::PointXYZ, pcl::Normal> seg;
+    pcl::PointIndices inliersCylinder;
+    pcl::PointIndices::Ptr pi(new pcl::PointIndices);
+    pi->indices = pointIndices.indices;
+    // Create the segmentation object for cylinder segmentation and set all the parameters
+    seg.setOptimizeCoefficients (true);
+    seg.setModelType (pcl::SACMODEL_CYLINDER);
+    seg.setMethodType (pcl::SAC_RANSAC);
+    seg.setNormalDistanceWeight (0.001);
+    seg.setAxis(Eigen::Vector3f::UnitX());
+    seg.setEpsAngle(0.01);
+    //seg.setMaxIterations (1000);
+    seg.setDistanceThreshold (0.005);
+    seg.setRadiusLimits (0.05, 0.15);
+    seg.setInputCloud (cloud);
+    seg.setIndices(pi);
+    seg.setInputNormals (cloudNormals);
+    seg.segment (inliersCylinder, *coefficientsCylinder);
+
+    return coefficientsCylinder;
+
+}
+
+
 
 pcl::ModelCoefficients::Ptr
 LB_StepDetectDefectsPcl::estimateCylinder(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud,
@@ -751,10 +914,12 @@ LB_StepDetectDefectsPcl::estimateCylinder(pcl::PointCloud<pcl::PointXYZ>::Ptr cl
     seg.setOptimizeCoefficients (true);
     seg.setModelType (pcl::SACMODEL_CYLINDER);
     seg.setMethodType (pcl::SAC_RANSAC);
-    seg.setNormalDistanceWeight (0.1);
+    seg.setNormalDistanceWeight (0.001);
+    seg.setAxis(Eigen::Vector3f::UnitX());
+    seg.setEpsAngle(0.01);
     //seg.setMaxIterations (1000);
-    seg.setDistanceThreshold (0.5);
-    seg.setRadiusLimits (50, 150);
+    seg.setDistanceThreshold (0.005);
+    seg.setRadiusLimits (0.05, 0.15);
     seg.setInputCloud (cloud);
     seg.setInputNormals (cloudNormals);
     seg.segment (inliersCylinder, *coefficientsCylinder);
@@ -763,16 +928,23 @@ LB_StepDetectDefectsPcl::estimateCylinder(pcl::PointCloud<pcl::PointXYZ>::Ptr cl
 }
 
 void LB_StepDetectDefectsPcl::preprocessPointCloud(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, pcl::PointCloud<pcl::PointXYZ>::Ptr &outputCloud)
-{    
+{
+#ifdef QT_DEBUG
+    qint64 begin = QDateTime::currentMSecsSinceEpoch();
+#endif
     //éliminer les points fantômes
     pcl::RadiusOutlierRemoval<pcl::PointXYZ> outrem;
     // build the filter
     outrem.setInputCloud(cloud);
-    outrem.setRadiusSearch(2);
-    outrem.setMinNeighborsInRadius (1);
+    outrem.setRadiusSearch(0.01);
+    outrem.setMinNeighborsInRadius (2);
 
     // apply filter
     outrem.filter (*outputCloud);
+#ifdef QT_DEBUG
+    qint64 end = QDateTime::currentMSecsSinceEpoch();
+    qDebug()<<"Preprocess in: "<< end - begin;
+#endif
 }
 
 void LB_StepDetectDefectsPcl::cutLog(pcl::PointCloud<pcl::PointXYZ>cloud,
@@ -800,7 +972,11 @@ void LB_StepDetectDefectsPcl::cutLog(pcl::PointCloud<pcl::PointXYZ>cloud,
 
     for(size_t i = 0; i < cloud.size(); i++)
     {
-        int sliceIndex = (cloud[i].x - minX)/ logLength;
+        //remove 5mm at extremity
+        if(cloud[i].x > maxX - 0.005 ){
+            continue;
+        }
+        int sliceIndex = (cloud[i].x - minX)/ sliceLength;
         sliceIndices[sliceIndex].indices.push_back(i);
     }
 }
